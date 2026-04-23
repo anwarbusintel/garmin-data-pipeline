@@ -1,0 +1,7 @@
+garminconnect>=0.2.40
+curl_cffi>=0.7.0
+psycopg[binary]>=3.2.0
+python-dotenv>=1.0.1
+streamlit>=1.44.0
+sqlalchemy>=2.0.0
+pandas>=2.2.0
