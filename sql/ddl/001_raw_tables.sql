@@ -41,3 +41,19 @@ CREATE TABLE IF NOT EXISTS raw_hrv (
 
 CREATE INDEX IF NOT EXISTS idx_raw_hrv_calendar_date ON raw_hrv (calendar_date);
 CREATE INDEX IF NOT EXISTS idx_raw_hrv_payload_gin ON raw_hrv USING GIN (payload);
+
+CREATE TABLE IF NOT EXISTS pipeline_run_log (
+    pipeline_run_log_id BIGSERIAL PRIMARY KEY,
+    run_id UUID NOT NULL UNIQUE,
+    pipeline_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('started', 'success', 'failed')),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
+    details JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_run_log_pipeline_name
+    ON pipeline_run_log (pipeline_name, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_run_log_status
+    ON pipeline_run_log (status, started_at DESC);

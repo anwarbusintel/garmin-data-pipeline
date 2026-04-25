@@ -5,3 +5,5 @@ python-dotenv>=1.0.1
 streamlit>=1.44.0
 sqlalchemy>=2.0.0
 pandas>=2.2.0
+pytest>=8.3.0
+prefect>=3.2.0

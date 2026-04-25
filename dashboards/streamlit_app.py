@@ -79,6 +79,45 @@ def format_decimal(value: float | None, digits: int = 1) -> str:
     return f"{value:.{digits}f}"
 
 
+def format_signed_decimal(value: float | None, digits: int = 2) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{value:+.{digits}f}"
+
+
+def build_sleep_score_correlation_summary(df: pd.DataFrame) -> pd.DataFrame:
+    correlation_columns = [
+        "avg_stress",
+        "steps",
+        "calories_burned",
+        "avg_heart_rate",
+        "resting_heart_rate",
+        "workout_count",
+        "activity_minutes",
+        "hrv_value",
+        "prior_day_steps",
+        "prior_day_calories_burned",
+        "prior_day_avg_stress",
+        "prior_day_resting_heart_rate",
+    ]
+    available_columns = [
+        column for column in correlation_columns if column in df.columns and df[column].notna().any()
+    ]
+    if not available_columns:
+        return pd.DataFrame(columns=["metric", "correlation_with_sleep_score"])
+
+    correlation_df = (
+        df[["sleep_score", *available_columns]]
+        .corr(numeric_only=True)["sleep_score"]
+        .drop(labels=["sleep_score"])
+        .dropna()
+        .sort_values(key=lambda series: series.abs(), ascending=False)
+        .rename_axis("metric")
+        .reset_index(name="correlation_with_sleep_score")
+    )
+    return correlation_df
+
+
 st.title("Garmin Sleep Dashboard")
 st.caption("Interactive review of nightly sleep outcomes and same-day Garmin predictors.")
 
@@ -146,6 +185,102 @@ with overview_tab:
     coverage_cols[2].metric("Workout Nights", f"{(filtered_df['workout_count'] > 0).sum()}")
     coverage_cols[3].metric("Avg Steps", format_decimal(filtered_df["steps"].mean(), 0))
 
+    st.subheader("Key Findings")
+    sleep_score_corr = build_sleep_score_correlation_summary(filtered_df)
+    strongest_positive = sleep_score_corr[
+        sleep_score_corr["correlation_with_sleep_score"] > 0
+    ].head(1)
+    strongest_negative = sleep_score_corr[
+        sleep_score_corr["correlation_with_sleep_score"] < 0
+    ].head(1)
+
+    workout_days_df = filtered_df[filtered_df["workout_count"].fillna(0) > 0]
+    non_workout_days_df = filtered_df[filtered_df["workout_count"].fillna(0) <= 0]
+    workout_score_delta = (
+        workout_days_df["sleep_score"].mean() - non_workout_days_df["sleep_score"].mean()
+        if not workout_days_df.empty and not non_workout_days_df.empty
+        else None
+    )
+
+    findings_cols = st.columns(3)
+    with findings_cols[0]:
+        if not strongest_positive.empty:
+            row = strongest_positive.iloc[0]
+            st.metric(
+                "Top Positive Correlation",
+                row["metric"],
+                format_signed_decimal(row["correlation_with_sleep_score"]),
+            )
+        else:
+            st.metric("Top Positive Correlation", "-", "-")
+
+    with findings_cols[1]:
+        if not strongest_negative.empty:
+            row = strongest_negative.iloc[0]
+            st.metric(
+                "Top Negative Correlation",
+                row["metric"],
+                format_signed_decimal(row["correlation_with_sleep_score"]),
+            )
+        else:
+            st.metric("Top Negative Correlation", "-", "-")
+
+    with findings_cols[2]:
+        if workout_score_delta is not None:
+            st.metric(
+                "Workout vs No Workout",
+                format_decimal(workout_days_df["sleep_score"].mean()),
+                format_signed_decimal(workout_score_delta),
+            )
+        else:
+            st.metric("Workout vs No Workout", "-", "-")
+
+    best_nights = (
+        filtered_df.sort_values(["sleep_score", "sleep_duration_minutes"], ascending=[False, False])
+        .head(5)[["sleep_date", "sleep_score", "sleep_duration_minutes", "avg_stress", "hrv_value"]]
+        .copy()
+    )
+    worst_nights = (
+        filtered_df.sort_values(["sleep_score", "sleep_duration_minutes"], ascending=[True, True])
+        .head(5)[["sleep_date", "sleep_score", "sleep_duration_minutes", "avg_stress", "hrv_value"]]
+        .copy()
+    )
+    for finding_df in (best_nights, worst_nights):
+        finding_df["sleep_date"] = finding_df["sleep_date"].dt.date
+
+    summary_lines: list[str] = []
+    if not strongest_positive.empty:
+        row = strongest_positive.iloc[0]
+        summary_lines.append(
+            f"- Strongest positive relationship with `sleep_score`: `{row['metric']}` ({format_signed_decimal(row['correlation_with_sleep_score'])})."
+        )
+    if not strongest_negative.empty:
+        row = strongest_negative.iloc[0]
+        summary_lines.append(
+            f"- Strongest negative relationship with `sleep_score`: `{row['metric']}` ({format_signed_decimal(row['correlation_with_sleep_score'])})."
+        )
+    if workout_score_delta is not None:
+        summary_lines.append(
+            f"- Average `sleep_score` on workout days: `{format_decimal(workout_days_df['sleep_score'].mean())}` "
+            f"vs `{format_decimal(non_workout_days_df['sleep_score'].mean())}` on non-workout days."
+        )
+    if not worst_nights.empty:
+        worst_row = worst_nights.iloc[0]
+        summary_lines.append(
+            f"- Lowest-scoring visible night: `{worst_row['sleep_date']}` with `sleep_score` `{format_decimal(worst_row['sleep_score'])}` "
+            f"and `avg_stress` `{format_decimal(worst_row['avg_stress'])}`."
+        )
+    if summary_lines:
+        st.markdown("\n".join(summary_lines))
+
+    findings_left, findings_right = st.columns(2)
+    with findings_left:
+        st.caption("Best 5 nights in the current filter window")
+        st.dataframe(best_nights, use_container_width=True, hide_index=True)
+    with findings_right:
+        st.caption("Worst 5 nights in the current filter window")
+        st.dataframe(worst_nights, use_container_width=True, hide_index=True)
+
     trend_left, trend_right = st.columns(2)
     with trend_left:
         st.subheader("Sleep Trend")
@@ -194,11 +329,11 @@ with relationships_tab:
         )
 
     with scatter_right:
-        st.subheader("Sleep Score vs Avg Heart Rate")
-        hr_scatter = filtered_df[["avg_heart_rate", "sleep_score"]].dropna()
+        st.subheader("Sleep Score vs Resting Heart Rate")
+        hr_scatter = filtered_df[["resting_heart_rate", "sleep_score"]].dropna()
         st.scatter_chart(
             hr_scatter,
-            x="avg_heart_rate",
+            x="resting_heart_rate",
             y="sleep_score",
             use_container_width=True,
         )
@@ -213,35 +348,7 @@ with relationships_tab:
         )
 
     st.subheader("Correlation Snapshot")
-    correlation_columns = [
-        "sleep_score",
-        "sleep_duration_minutes",
-        "deep_sleep_minutes",
-        "rem_sleep_minutes",
-        "awake_minutes",
-        "avg_stress",
-        "steps",
-        "calories_burned",
-        "avg_heart_rate",
-        "resting_heart_rate",
-        "workout_count",
-        "activity_minutes",
-        "hrv_value",
-        "prior_day_steps",
-        "prior_day_calories_burned",
-        "prior_day_avg_stress",
-        "prior_day_resting_heart_rate",
-    ]
-    available_corr_columns = [col for col in correlation_columns if col in filtered_df.columns]
-    correlation_df = filtered_df[available_corr_columns].corr(numeric_only=True)
-    sleep_score_corr = (
-        correlation_df["sleep_score"]
-        .drop(labels=["sleep_score"])
-        .dropna()
-        .sort_values(key=lambda series: series.abs(), ascending=False)
-        .rename_axis("metric")
-        .reset_index(name="correlation_with_sleep_score")
-    )
+    sleep_score_corr = build_sleep_score_correlation_summary(filtered_df)
     st.dataframe(sleep_score_corr, use_container_width=True, hide_index=True)
 
 with data_tab:
